@@ -1,11 +1,10 @@
 // ==UserScript==
-// @name         Tulip App Editor - Advanced Image Editor Suite (v12.1)
+// @name         Tulip App Editor - Advanced Image Editor Suite (v13.0)
 // @namespace    http://tampermonkey.net/
-// @version      12.2
-// @description  Fixed arrow shaft geometry (pulls shaft back to center of arrow point to prevent clipping), Contextual Toolbar, and robust Cloud loading.
+// @version      13.0
+// @description  Added robust State History Engine (Undo/Redo), keyboard shortcuts, input safeties, and contextual styling tools.
 // @author       Blake Bourque
 // @match        https://*.tulip.co/apps/*
-// @match        https://*.tulip.co/w/*/apps/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @connect      amazonaws.com
@@ -49,7 +48,8 @@
             gap: 4px; min-width: 65px; transition: all 0.15s ease;
         }
         .suite-tool-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
-        .suite-tool-btn:hover { background: #f1f5f9; color: #0f172a; }
+        .suite-tool-btn:hover:not(:disabled) { background: #f1f5f9; color: #0f172a; }
+        .suite-tool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .suite-tool-btn.active { background: #0066cc; color: white; border-color: #0052a3; }
         
         .toolbar-divider { width: 1px; height: 32px; background: #e2e8f0; margin: 0 8px; }
@@ -244,9 +244,13 @@
                     <button class="suite-tool-btn" data-mode="rect"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-linecap="round"/></svg>Square</button>
                     <button class="suite-tool-btn" data-mode="circle"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>Circle</button>
                     
+                    <div class="toolbar-divider"></div>
+                    
+                    <button class="suite-tool-btn" id="suite-undo" title="Undo (Ctrl+Z)" disabled><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11" stroke-linecap="round" stroke-linejoin="round"/></svg>Undo</button>
+                    <button class="suite-tool-btn" id="suite-redo" title="Redo (Ctrl+Y)" disabled><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5v0A5.5 5.5 0 0 0 9.5 20H13" stroke-linecap="round" stroke-linejoin="round"/></svg>Redo</button>
+                    
                     <div class="toolbar-divider" id="suite-main-divider" style="display: none;"></div>
                     
-                    <!-- DYNAMIC CONTROL GROUPS -->
                     <div id="suite-line-controls" style="display: none; align-items: center; gap: 8px;">
                         <div class="style-group">
                             <div class="style-control-label">Line Color</div>
@@ -333,13 +337,13 @@
         const cropBox = document.getElementById('tulip-suite-cropbox');
         const wrapper = document.getElementById('tulip-canvas-stack-wrapper');
         
-        // Control Wrappers for Dynamic Display
         const mainDivider = document.getElementById('suite-main-divider');
         const lineControls = document.getElementById('suite-line-controls');
         const fillControls = document.getElementById('suite-fill-controls');
         const textControls = document.getElementById('suite-text-controls');
+        const undoBtn = document.getElementById('suite-undo');
+        const redoBtn = document.getElementById('suite-redo');
 
-        // Inputs
         const strokePicker = document.getElementById('suite-stroke-picker');
         const strokeHex = document.getElementById('suite-stroke-hex');
         const strokeOp = document.getElementById('suite-stroke-opacity');
@@ -383,26 +387,66 @@
         let startMouseX, startMouseY, startLeft, startTop, startWidth, startHeight, startX, startY;
         let isDragging = false, isResizing = false, isDrawing = false;
 
-        // DYNAMIC UI ENGINE
+        // --- HISTORY ENGINE (UNDO/REDO) ---
+        let history = [];
+        let historyStep = -1;
+
+        function saveState() {
+            if (historyStep < history.length - 1) { history = history.slice(0, historyStep + 1); }
+            history.push({
+                annotations: JSON.parse(JSON.stringify(annotations)),
+                boxGeom: JSON.parse(JSON.stringify(boxGeom))
+            });
+            historyStep++;
+            updateUndoRedoUI();
+        }
+
+        function undo() {
+            if (historyStep > 0) {
+                historyStep--;
+                restoreState(history[historyStep]);
+            }
+        }
+
+        function redo() {
+            if (historyStep < history.length - 1) {
+                historyStep++;
+                restoreState(history[historyStep]);
+            }
+        }
+
+        function restoreState(state) {
+            annotations = JSON.parse(JSON.stringify(state.annotations));
+            boxGeom = JSON.parse(JSON.stringify(state.boxGeom));
+            selectedAnno = null; // Clear selection safety
+            updateCropUI();
+            updateToolbarVisibility();
+            renderVectors();
+            updateUndoRedoUI();
+        }
+
+        function updateUndoRedoUI() {
+            undoBtn.disabled = historyStep <= 0;
+            redoBtn.disabled = historyStep >= history.length - 1;
+        }
+
+        undoBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); undo(); });
+        redoBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); redo(); });
+        // ----------------------------------
+
         function updateToolbarVisibility() {
             let activeType = currentMode;
             if (currentMode === 'select') { activeType = selectedAnno ? selectedAnno.type : 'none'; }
 
-            lineControls.style.display = 'none';
-            fillControls.style.display = 'none';
-            textControls.style.display = 'none';
-            mainDivider.style.display = 'none';
+            lineControls.style.display = 'none'; fillControls.style.display = 'none';
+            textControls.style.display = 'none'; mainDivider.style.display = 'none';
 
             if (activeType === 'line' || activeType === 'arrow') {
-                lineControls.style.display = 'flex';
-                mainDivider.style.display = 'block';
+                lineControls.style.display = 'flex'; mainDivider.style.display = 'block';
             } else if (activeType === 'rect' || activeType === 'circle') {
-                lineControls.style.display = 'flex';
-                fillControls.style.display = 'flex';
-                mainDivider.style.display = 'block';
+                lineControls.style.display = 'flex'; fillControls.style.display = 'flex'; mainDivider.style.display = 'block';
             } else if (activeType === 'text') {
-                textControls.style.display = 'flex';
-                mainDivider.style.display = 'block';
+                textControls.style.display = 'flex'; mainDivider.style.display = 'block';
             }
         }
 
@@ -415,16 +459,14 @@
             boxGeom = parsedState.cropSettings;
             cropBox.style.display = 'block';
             document.querySelectorAll('.suite-tool-btn').forEach(b => {
-                if (b.getAttribute('data-mode') === 'crop') b.classList.add('active');
-                else b.classList.remove('active');
+                if (b.getAttribute('data-mode') === 'crop') b.classList.add('active'); else b.classList.remove('active');
             });
             currentMode = 'crop';
         }
 
         setTimeout(() => {
             if (!parsedState || !parsedState.cropSettings) {
-                boxGeom.left = 0; boxGeom.top = 0;
-                boxGeom.width = wrapper.clientWidth; boxGeom.height = wrapper.clientHeight;
+                boxGeom.left = 0; boxGeom.top = 0; boxGeom.width = wrapper.clientWidth; boxGeom.height = wrapper.clientHeight;
                 if (canvas.height > wrapper.clientHeight || canvas.width > wrapper.clientWidth) {
                     const renderRatio = Math.min(wrapper.clientWidth / canvas.width, wrapper.clientHeight / canvas.height);
                     boxGeom.width = canvas.width * renderRatio; boxGeom.height = canvas.height * renderRatio;
@@ -433,6 +475,7 @@
             }
             updateCropUI();
             updateToolbarVisibility();
+            saveState(); // Commit Base State Layout Start
         }, 50);
 
         function renderVectors() {
@@ -450,23 +493,16 @@
                 const w = a.width, h = a.height;
 
                 if (a.type === 'line' || a.type === 'arrow') {
-                    // FIXED: Pull back shaft to the center of the arrow triangle
                     const head = a.type === 'arrow' ? markupCtx.lineWidth * 4 : 0;
                     const shaftEnd = a.type === 'arrow' ? (w/2 - head/2) : w/2;
                     
-                    markupCtx.beginPath(); 
-                    markupCtx.moveTo(-w/2, 0); 
-                    markupCtx.lineTo(shaftEnd, 0); 
-                    markupCtx.stroke();
+                    markupCtx.beginPath(); markupCtx.moveTo(-w/2, 0); markupCtx.lineTo(shaftEnd, 0); markupCtx.stroke();
                     
                     if (a.type === 'arrow') {
                         markupCtx.fillStyle = markupCtx.strokeStyle;
-                        markupCtx.beginPath(); 
-                        markupCtx.moveTo(w/2, 0);
-                        markupCtx.lineTo(w/2 - head, -head / 1.7); 
-                        markupCtx.lineTo(w/2 - head, head / 1.7);
-                        markupCtx.closePath(); 
-                        markupCtx.fill();
+                        markupCtx.beginPath(); markupCtx.moveTo(w/2, 0);
+                        markupCtx.lineTo(w/2 - head, -head / 1.7); markupCtx.lineTo(w/2 - head, head / 1.7);
+                        markupCtx.closePath(); markupCtx.fill();
                     }
                 } else if (a.type === 'rect') {
                     markupCtx.beginPath(); markupCtx.rect(-w/2, -h/2, w, h); 
@@ -499,8 +535,7 @@
                     const pts = { nw: [-w/2-6, -h/2-6], n: [0, -h/2-6], ne: [w/2+6, -h/2-6], e: [w/2+6, 0], se: [w/2+6, h/2+6], s: [0, h/2+6], sw: [-w/2-6, h/2+6], w: [-w/2-6, 0] };
                     for (let p in pts) {
                         markupCtx.fillStyle = 'white'; markupCtx.strokeStyle = '#0066cc'; markupCtx.lineWidth = 2;
-                        markupCtx.fillRect(pts[p][0] - 9, pts[p][1] - 9, 18, 18);
-                        markupCtx.strokeRect(pts[p][0] - 9, pts[p][1] - 9, 18, 18);
+                        markupCtx.fillRect(pts[p][0] - 9, pts[p][1] - 9, 18, 18); markupCtx.strokeRect(pts[p][0] - 9, pts[p][1] - 9, 18, 18);
                     }
                 }
                 markupCtx.restore();
@@ -513,25 +548,19 @@
                 markupCtx.lineWidth = currentAnno.thickness;
                 markupCtx.beginPath();
                 if (currentAnno.type === 'line' || currentAnno.type === 'arrow') {
-                    // FIXED: Pull back shaft during live drawing
                     const head = currentAnno.type === 'arrow' ? markupCtx.lineWidth * 4 : 0;
                     const angle = Math.atan2(currentAnno.y2 - currentAnno.y1, currentAnno.x2 - currentAnno.x1); 
                     const pullBack = currentAnno.type === 'arrow' ? head / 2 : 0;
-                    const shaftEndX = currentAnno.x2 - pullBack * Math.cos(angle);
-                    const shaftEndY = currentAnno.y2 - pullBack * Math.sin(angle);
+                    const shaftEndX = currentAnno.x2 - pullBack * Math.cos(angle); const shaftEndY = currentAnno.y2 - pullBack * Math.sin(angle);
                     
-                    markupCtx.moveTo(currentAnno.x1, currentAnno.y1); 
-                    markupCtx.lineTo(shaftEndX, shaftEndY); 
-                    markupCtx.stroke();
+                    markupCtx.moveTo(currentAnno.x1, currentAnno.y1); markupCtx.lineTo(shaftEndX, shaftEndY); markupCtx.stroke();
                     
                     if (currentAnno.type === 'arrow') {
                         markupCtx.fillStyle = markupCtx.strokeStyle;
-                        markupCtx.beginPath(); 
-                        markupCtx.moveTo(currentAnno.x2, currentAnno.y2);
+                        markupCtx.beginPath(); markupCtx.moveTo(currentAnno.x2, currentAnno.y2);
                         markupCtx.lineTo(currentAnno.x2 - head * Math.cos(angle - Math.PI/6), currentAnno.y2 - head * Math.sin(angle - Math.PI/6));
                         markupCtx.lineTo(currentAnno.x2 - head * Math.cos(angle + Math.PI/6), currentAnno.y2 - head * Math.sin(angle + Math.PI/6));
-                        markupCtx.closePath(); 
-                        markupCtx.fill();
+                        markupCtx.closePath(); markupCtx.fill();
                     }
                 } else if (currentAnno.type === 'rect') {
                     markupCtx.rect(currentAnno.x1, currentAnno.y1, currentAnno.x2 - currentAnno.x1, currentAnno.y2 - currentAnno.y1); 
@@ -553,28 +582,33 @@
                 selectedAnno.strokeColor = activeStrokeColor; selectedAnno.strokeOpacity = activeStrokeOp;
                 selectedAnno.thickness = activeThickness;
                 selectedAnno.fillColor = activeFillColor; selectedAnno.fillOpacity = activeFillOp;
-                selectedAnno.fontFamily = activeFontFamily;
-                selectedAnno.fontSize = activeFontSize;
+                selectedAnno.fontFamily = activeFontFamily; selectedAnno.fontSize = activeFontSize;
                 selectedAnno.textColor = activeTextColor; selectedAnno.textOpacity = activeTextOp;
                 
                 if (selectedAnno.type === 'text') {
                     markupCtx.font = `bold ${activeFontSize}px ${activeFontFamily}`;
                     const m = markupCtx.measureText(selectedAnno.text);
-                    selectedAnno.width = m.width;
-                    selectedAnno.height = activeFontSize;
+                    selectedAnno.width = m.width; selectedAnno.height = activeFontSize;
                 }
                 renderVectors();
             }
         }
 
+        const triggerSave = () => { if (selectedAnno) saveState(); };
+
         strokePicker.addEventListener('input', (e) => { activeStrokeColor = e.target.value; strokeHex.value = activeStrokeColor; syncStylesToSelected(); });
         strokeHex.addEventListener('input', (e) => { activeStrokeColor = e.target.value; strokePicker.value = activeStrokeColor; syncStylesToSelected(); });
         strokeOp.addEventListener('input', (e) => { activeStrokeOp = parseInt(e.target.value); strokeOpVal.innerText = activeStrokeOp + '%'; syncStylesToSelected(); });
         strokeWidthEl.addEventListener('input', (e) => { if(e.target.value) { activeThickness = parseInt(e.target.value); syncStylesToSelected(); } });
+        
+        strokePicker.addEventListener('change', triggerSave); strokeHex.addEventListener('change', triggerSave); 
+        strokeOp.addEventListener('change', triggerSave); strokeWidthEl.addEventListener('change', triggerSave);
 
         fillPicker.addEventListener('input', (e) => { activeFillColor = e.target.value; fillHex.value = activeFillColor; syncStylesToSelected(); });
         fillHex.addEventListener('input', (e) => { activeFillColor = e.target.value; fillPicker.value = activeFillColor; syncStylesToSelected(); });
         fillOp.addEventListener('input', (e) => { activeFillOp = parseInt(e.target.value); fillOpVal.innerText = activeFillOp + '%'; syncStylesToSelected(); });
+
+        fillPicker.addEventListener('change', triggerSave); fillHex.addEventListener('change', triggerSave); fillOp.addEventListener('change', triggerSave);
 
         fontFamEl.addEventListener('input', (e) => { activeFontFamily = e.target.value; syncStylesToSelected(); });
         fontSizeEl.addEventListener('input', (e) => { if(e.target.value) { activeFontSize = parseInt(e.target.value); syncStylesToSelected(); } });
@@ -582,28 +616,42 @@
         textHex.addEventListener('input', (e) => { activeTextColor = e.target.value; textPicker.value = activeTextColor; syncStylesToSelected(); });
         textOp.addEventListener('input', (e) => { activeTextOp = parseInt(e.target.value); textOpVal.innerText = activeTextOp + '%'; syncStylesToSelected(); });
 
+        fontFamEl.addEventListener('change', triggerSave); fontSizeEl.addEventListener('change', triggerSave);
+        textPicker.addEventListener('change', triggerSave); textHex.addEventListener('change', triggerSave); textOp.addEventListener('change', triggerSave);
+
+
         const handleGlobalKeypress = (e) => {
-            if (e.key === 'Delete' || e.key === 'Backspace') {
+            const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT';
+            
+            if (!isInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+                e.preventDefault(); e.stopPropagation();
+                if (e.shiftKey) redo(); else undo();
+                return;
+            }
+            if (!isInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+                e.preventDefault(); e.stopPropagation();
+                redo(); return;
+            }
+            if (!isInput && (e.key === 'Delete' || e.key === 'Backspace')) {
                 e.preventDefault(); e.stopPropagation(); 
                 if (selectedAnno) { 
                     annotations = annotations.filter(item => item !== selectedAnno); 
                     selectedAnno = null; 
-                    updateToolbarVisibility();
-                    renderVectors(); 
+                    updateToolbarVisibility(); renderVectors(); saveState();
                 }
             }
         };
         window.addEventListener('keydown', handleGlobalKeypress, true);
 
         document.querySelectorAll('.suite-tool-btn').forEach(btn => {
+            if (btn.id === 'suite-undo' || btn.id === 'suite-redo') return;
             btn.addEventListener('click', (e) => {
                 e.stopPropagation(); e.preventDefault();
-                document.querySelectorAll('.suite-tool-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.suite-tool-btn:not(#suite-undo):not(#suite-redo)').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active'); currentMode = btn.getAttribute('data-mode');
                 if (currentMode !== 'select') selectedAnno = null;
                 cropBox.style.display = (currentMode === 'crop') ? 'block' : 'none'; 
-                updateToolbarVisibility();
-                renderVectors();
+                updateToolbarVisibility(); renderVectors();
             });
         });
 
@@ -671,8 +719,7 @@
                     isTransforming = true; activeTransformHandle = 'move';
                     startMouseX = nx; startMouseY = ny; startLeft = selectedAnno.cx; startTop = selectedAnno.cy;
                 }
-                updateToolbarVisibility();
-                renderVectors(); return;
+                updateToolbarVisibility(); renderVectors(); return;
             } else if (currentMode === 'crop') {
                 if (e.target.id === 'handle-resize') {
                     isResizing = true; startX = e.clientX; startY = e.clientY; startWidth = boxGeom.width; startHeight = boxGeom.height;
@@ -694,7 +741,7 @@
                             fontFamily: activeFontFamily, fontSize: activeFontSize, textColor: activeTextColor, textOpacity: activeTextOp,
                             rotation: 0 
                         });
-                        renderVectors();
+                        renderVectors(); saveState();
                     }
                 } else {
                     isDrawing = true; 
@@ -764,6 +811,8 @@
         };
 
         const handleMouseUp = () => {
+            let stateChanged = false;
+            
             if (currentAnno && isDrawing) {
                 if (currentAnno.type === 'line' || currentAnno.type === 'arrow') {
                     const cx = (currentAnno.x1 + currentAnno.x2) / 2; const cy = (currentAnno.y1 + currentAnno.y2) / 2;
@@ -783,9 +832,13 @@
                         fillColor: currentAnno.fillColor, fillOpacity: currentAnno.fillOpacity, rotation: 0 
                     });
                 }
-                currentAnno = null; renderVectors();
+                currentAnno = null; stateChanged = true; renderVectors();
             }
+            
+            if (isTransforming || isDragging || isResizing) stateChanged = true;
+
             isDragging = false; isResizing = false; isDrawing = false; isTransforming = false; activeTransformHandle = null;
+            if (stateChanged) saveState();
         };
 
         wrapper.addEventListener('mousedown', handleMouseDown);
