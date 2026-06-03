@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Tulip App Editor - Advanced Image Editor Suite (v10.1)
+// @name         Tulip App Editor - Advanced Image Editor Suite (v12.1)
 // @namespace    http://tampermonkey.net/
-// @version      10.1
-// @description  Added legacy color migration to support older saves, separate line/fill opacity, and non-destructive JSON saves.
+// @version      12.1
+// @description  Fixed arrow shaft geometry (pulls shaft back to center of arrow point to prevent clipping), Contextual Toolbar, and robust Cloud loading.
 // @author       Blake Bourque
 // @match        https://*.tulip.co/apps/*
 // @grant        GM_addStyle
@@ -39,7 +39,7 @@
         
         .tulip-suite-toolbar {
             display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 20px;
-            background: #f8fafc; padding: 8px; border-radius: 6px; border: 1px solid #e2e8f0; flex-wrap: wrap;
+            background: #f8fafc; padding: 8px; border-radius: 6px; border: 1px solid #e2e8f0; flex-wrap: wrap; row-gap: 12px;
         }
         .suite-tool-btn {
             background: white; border: 1px solid #cbd5e1; padding: 8px 14px;
@@ -59,6 +59,7 @@
         .suite-hex-input { width: 60px; height: 24px; padding: 2px 4px; border-radius: 4px; border: 1px solid #cbd5e1; font-size: 12px; font-family: monospace; }
         .suite-number-input { height: 24px; width: 45px; padding: 2px 4px; border-radius: 4px; border: 1px solid #cbd5e1; font-size: 12px; font-weight: 600; color: #334155; text-align: center; }
         .suite-range-input { width: 60px; cursor: pointer; }
+        .suite-select-input { height: 24px; border-radius: 4px; border: 1px solid #cbd5e1; font-size: 12px; padding: 0 4px; color: #334155; }
 
         .tulip-suite-workspace {
             position: relative; overflow: auto; background: #232731;
@@ -98,9 +99,7 @@
                 chunkBytes[4] = 116; chunkBytes[5] = 69; chunkBytes[6] = 88; chunkBytes[7] = 116;
                 chunkBytes.set(keyBytes, 8); chunkBytes[8 + keyBytes.length] = 0; chunkBytes.set(valBytes, 9 + keyBytes.length);
                 let crc = 0xFFFFFFFF;
-                for (let i = 4; i < 8 + chunkLength; i++) {
-                    crc ^= chunkBytes[i]; for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
-                }
+                for (let i = 4; i < 8 + chunkLength; i++) { crc ^= chunkBytes[i]; for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0); }
                 chunkView.setUint32(8 + chunkLength, crc ^ 0xFFFFFFFF);
                 resolve(new Blob([bytes.subarray(0, bytes.length - 12), chunkBytes, bytes.subarray(bytes.length - 12)], { type: "image/png" }));
             };
@@ -120,9 +119,7 @@
                     const type = decoder.decode(new Uint8Array(buffer, idx + 4, 4));
                     if (type === "tEXt") {
                         const dataBytes = new Uint8Array(buffer, idx + 8, length); const nullPos = dataBytes.indexOf(0);
-                        if (decoder.decode(dataBytes.subarray(0, nullPos)) === key) {
-                            resolve(decoder.decode(dataBytes.subarray(nullPos + 1))); return;
-                        }
+                        if (decoder.decode(dataBytes.subarray(0, nullPos)) === key) { resolve(decoder.decode(dataBytes.subarray(nullPos + 1))); return; }
                     }
                     if (type === "IEND") break;
                     idx += 12 + length;
@@ -137,15 +134,11 @@
         const textNodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         let resetRatioNode = null;
         while (textNodes.nextNode()) {
-            if (textNodes.currentNode.nodeValue.trim() === "Reset aspect ratio") {
-                resetRatioNode = textNodes.currentNode; break;
-            }
+            if (textNodes.currentNode.nodeValue.trim() === "Reset aspect ratio") { resetRatioNode = textNodes.currentNode; break; }
         }
         if (resetRatioNode) {
             const resetRowContainer = resetRatioNode.parentElement.closest('div');
-            if (resetRowContainer && !document.getElementById('tulip-integrated-crop-container')) {
-                injectSuiteButton(resetRowContainer);
-            }
+            if (resetRowContainer && !document.getElementById('tulip-integrated-crop-container')) { injectSuiteButton(resetRowContainer); }
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
@@ -199,7 +192,7 @@
                 openImageSuiteWindow(extractedUrl, btn, fileInput);
             } else {
                 btn.disabled = false; btn.innerText = 'Edit & Crop Selected Image';
-                alert("Please select the image widget again.");
+                alert("Please select the image widget again. (ID missing)");
             }
         });
     }
@@ -225,18 +218,14 @@
                     });
                 }
             },
-            onerror: function() {
-                sidebarBtn.disabled = false; sidebarBtn.innerText = 'Edit & Crop Selected Image';
-            }
+            onerror: function() { sidebarBtn.disabled = false; sidebarBtn.innerText = 'Edit & Crop Selected Image'; }
         });
     }
 
     function hexToRgba(hex, opacity) {
         let h = hex.replace('#', '');
         if (h.length === 3) h = h.split('').map(c => c + c).join('');
-        const r = parseInt(h.substring(0, 2), 16);
-        const g = parseInt(h.substring(2, 4), 16);
-        const b = parseInt(h.substring(4, 6), 16);
+        const r = parseInt(h.substring(0, 2), 16), g = parseInt(h.substring(2, 4), 16), b = parseInt(h.substring(4, 6), 16);
         return `rgba(${r}, ${g}, ${b}, ${opacity / 100})`;
     }
 
@@ -254,37 +243,70 @@
                     <button class="suite-tool-btn" data-mode="rect"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-linecap="round"/></svg>Square</button>
                     <button class="suite-tool-btn" data-mode="circle"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>Circle</button>
                     
-                    <div class="toolbar-divider"></div>
+                    <div class="toolbar-divider" id="suite-main-divider" style="display: none;"></div>
                     
-                    <div class="style-group">
-                        <div class="style-control-label">Line Color</div>
-                        <div class="style-group-row">
-                            <input type="color" id="suite-stroke-picker" class="suite-color-input" value="#ef4444">
-                            <input type="text" id="suite-stroke-hex" class="suite-hex-input" value="#ef4444">
-                            <input type="range" id="suite-stroke-opacity" class="suite-range-input" min="0" max="100" value="100" title="Line Opacity">
-                            <span style="font-size:10px; color:#64748b; min-width: 25px;" id="suite-stroke-op-val">100%</span>
+                    <!-- DYNAMIC CONTROL GROUPS -->
+                    <div id="suite-line-controls" style="display: none; align-items: center; gap: 8px;">
+                        <div class="style-group">
+                            <div class="style-control-label">Line Color</div>
+                            <div class="style-group-row">
+                                <input type="color" id="suite-stroke-picker" class="suite-color-input" value="#ef4444">
+                                <input type="text" id="suite-stroke-hex" class="suite-hex-input" value="#ef4444">
+                                <input type="range" id="suite-stroke-opacity" class="suite-range-input" min="0" max="100" value="100" title="Line Opacity">
+                                <span style="font-size:10px; color:#64748b; min-width: 25px;" id="suite-stroke-op-val">100%</span>
+                            </div>
                         </div>
-                    </div>
-                    
-                    <div class="style-group" style="margin-left: 8px;">
-                        <div class="style-control-label">Thickness</div>
-                        <div class="style-group-row">
-                            <input type="number" id="suite-stroke-width" class="suite-number-input" min="1" max="100" value="6">
-                            <span style="font-size:10px; color:#64748b;">px</span>
+                        <div class="style-group" style="margin-left: 8px;">
+                            <div class="style-control-label">Thickness</div>
+                            <div class="style-group-row">
+                                <input type="number" id="suite-stroke-width" class="suite-number-input" min="1" max="100" value="6">
+                                <span style="font-size:10px; color:#64748b;">px</span>
+                            </div>
                         </div>
+                        <div class="toolbar-divider"></div>
                     </div>
 
-                    <div class="toolbar-divider"></div>
-
-                    <div class="style-group">
-                        <div class="style-control-label">Fill Color</div>
-                        <div class="style-group-row">
-                            <input type="color" id="suite-fill-picker" class="suite-color-input" value="#0066cc">
-                            <input type="text" id="suite-fill-hex" class="suite-hex-input" value="#0066cc">
-                            <input type="range" id="suite-fill-opacity" class="suite-range-input" min="0" max="100" value="0" title="Fill Opacity">
-                            <span style="font-size:10px; color:#64748b; min-width: 25px;" id="suite-fill-op-val">0%</span>
+                    <div id="suite-fill-controls" style="display: none; align-items: center; gap: 8px;">
+                        <div class="style-group">
+                            <div class="style-control-label">Fill Color</div>
+                            <div class="style-group-row">
+                                <input type="color" id="suite-fill-picker" class="suite-color-input" value="#0066cc">
+                                <input type="text" id="suite-fill-hex" class="suite-hex-input" value="#0066cc">
+                                <input type="range" id="suite-fill-opacity" class="suite-range-input" min="0" max="100" value="0" title="Fill Opacity">
+                                <span style="font-size:10px; color:#64748b; min-width: 25px;" id="suite-fill-op-val">0%</span>
+                            </div>
                         </div>
+                        <div class="toolbar-divider"></div>
                     </div>
+
+                    <div id="suite-text-controls" style="display: none; align-items: center; gap: 8px;">
+                        <div class="style-group">
+                            <div class="style-control-label">Text Format</div>
+                            <div class="style-group-row">
+                                <select id="suite-font-family" class="suite-select-input">
+                                    <option value="sans-serif">Sans-Serif</option>
+                                    <option value="serif">Serif</option>
+                                    <option value="monospace">Monospace</option>
+                                    <option value="Arial">Arial</option>
+                                    <option value="'Courier New'">Courier New</option>
+                                    <option value="'Times New Roman'">Times</option>
+                                </select>
+                                <input type="number" id="suite-font-size" class="suite-number-input" min="8" max="250" value="32" title="Font Size">
+                                <span style="font-size:10px; color:#64748b;">px</span>
+                            </div>
+                        </div>
+                        <div class="style-group" style="margin-left: 8px;">
+                            <div class="style-control-label">Text Color</div>
+                            <div class="style-group-row">
+                                <input type="color" id="suite-text-picker" class="suite-color-input" value="#ef4444">
+                                <input type="text" id="suite-text-hex" class="suite-hex-input" value="#ef4444">
+                                <input type="range" id="suite-text-opacity" class="suite-range-input" min="0" max="100" value="100" title="Text Opacity">
+                                <span style="font-size:10px; color:#64748b; min-width: 25px;" id="suite-text-op-val">100%</span>
+                            </div>
+                        </div>
+                        <div class="toolbar-divider"></div>
+                    </div>
+
                 </div>
                 <div class="tulip-suite-workspace">
                     <div id="tulip-canvas-stack-wrapper">
@@ -310,6 +332,13 @@
         const cropBox = document.getElementById('tulip-suite-cropbox');
         const wrapper = document.getElementById('tulip-canvas-stack-wrapper');
         
+        // Control Wrappers for Dynamic Display
+        const mainDivider = document.getElementById('suite-main-divider');
+        const lineControls = document.getElementById('suite-line-controls');
+        const fillControls = document.getElementById('suite-fill-controls');
+        const textControls = document.getElementById('suite-text-controls');
+
+        // Inputs
         const strokePicker = document.getElementById('suite-stroke-picker');
         const strokeHex = document.getElementById('suite-stroke-hex');
         const strokeOp = document.getElementById('suite-stroke-opacity');
@@ -321,6 +350,13 @@
         const fillOp = document.getElementById('suite-fill-opacity');
         const fillOpVal = document.getElementById('suite-fill-op-val');
 
+        const fontFamEl = document.getElementById('suite-font-family');
+        const fontSizeEl = document.getElementById('suite-font-size');
+        const textPicker = document.getElementById('suite-text-picker');
+        const textHex = document.getElementById('suite-text-hex');
+        const textOp = document.getElementById('suite-text-opacity');
+        const textOpVal = document.getElementById('suite-text-op-val');
+
         canvas.width = sourceImg.naturalWidth; canvas.height = sourceImg.naturalHeight;
         markupCanvas.width = sourceImg.naturalWidth; markupCanvas.height = sourceImg.naturalHeight;
         ctx.drawImage(sourceImg, 0, 0);
@@ -329,15 +365,10 @@
         let boxGeom = { left: 0, top: 0, width: canvas.width, height: canvas.height };
         let currentMode = 'select'; 
         
-        // LEGACY MIGRATION: Convert old .color attributes to new .strokeColor standard
         let annotations = [];
         if (parsedState && parsedState.vectors) {
             annotations = parsedState.vectors.map(v => {
-                if (v.color && !v.strokeColor) {
-                    v.strokeColor = v.color;
-                    v.strokeOpacity = 100;
-                    v.fillOpacity = 0;
-                }
+                if (v.color && !v.strokeColor) { v.strokeColor = v.color; v.strokeOpacity = 100; v.fillOpacity = 0; }
                 return v;
             });
         }
@@ -345,10 +376,34 @@
         let selectedAnno = null, currentAnno = null;
         let activeStrokeColor = "#ef4444", activeStrokeOp = 100, activeThickness = 6;
         let activeFillColor = "#0066cc", activeFillOp = 0; 
+        let activeFontFamily = "sans-serif", activeFontSize = 32, activeTextColor = "#ef4444", activeTextOp = 100;
         
         let isTransforming = false, activeTransformHandle = null;
         let startMouseX, startMouseY, startLeft, startTop, startWidth, startHeight, startX, startY;
         let isDragging = false, isResizing = false, isDrawing = false;
+
+        // DYNAMIC UI ENGINE
+        function updateToolbarVisibility() {
+            let activeType = currentMode;
+            if (currentMode === 'select') { activeType = selectedAnno ? selectedAnno.type : 'none'; }
+
+            lineControls.style.display = 'none';
+            fillControls.style.display = 'none';
+            textControls.style.display = 'none';
+            mainDivider.style.display = 'none';
+
+            if (activeType === 'line' || activeType === 'arrow') {
+                lineControls.style.display = 'flex';
+                mainDivider.style.display = 'block';
+            } else if (activeType === 'rect' || activeType === 'circle') {
+                lineControls.style.display = 'flex';
+                fillControls.style.display = 'flex';
+                mainDivider.style.display = 'block';
+            } else if (activeType === 'text') {
+                textControls.style.display = 'flex';
+                mainDivider.style.display = 'block';
+            }
+        }
 
         function updateCropUI() {
             cropBox.style.left = boxGeom.left + 'px'; cropBox.style.top = boxGeom.top + 'px';
@@ -376,6 +431,7 @@
                 }
             }
             updateCropUI();
+            updateToolbarVisibility();
         }, 50);
 
         function renderVectors() {
@@ -389,18 +445,27 @@
                 markupCtx.strokeStyle = hexToRgba(a.strokeColor || '#ef4444', a.strokeOpacity !== undefined ? a.strokeOpacity : 100);
                 markupCtx.fillStyle = hexToRgba(a.fillColor || '#0066cc', a.fillOpacity !== undefined ? a.fillOpacity : 0);
                 markupCtx.lineWidth = a.thickness || 6;
-                markupCtx.font = `bold ${Math.max(16, canvas.width / 45)}px sans-serif`;
 
                 const w = a.width, h = a.height;
 
                 if (a.type === 'line' || a.type === 'arrow') {
-                    markupCtx.beginPath(); markupCtx.moveTo(-w/2, 0); markupCtx.lineTo(w/2, 0); markupCtx.stroke();
+                    // FIXED: Pull back shaft to the center of the arrow triangle
+                    const head = a.type === 'arrow' ? markupCtx.lineWidth * 4 : 0;
+                    const shaftEnd = a.type === 'arrow' ? (w/2 - head/2) : w/2;
+                    
+                    markupCtx.beginPath(); 
+                    markupCtx.moveTo(-w/2, 0); 
+                    markupCtx.lineTo(shaftEnd, 0); 
+                    markupCtx.stroke();
+                    
                     if (a.type === 'arrow') {
                         markupCtx.fillStyle = markupCtx.strokeStyle;
-                        const head = markupCtx.lineWidth * 4;
-                        markupCtx.beginPath(); markupCtx.moveTo(w/2, 0);
-                        markupCtx.lineTo(w/2 - head, -head / 1.7); markupCtx.lineTo(w/2 - head, head / 1.7);
-                        markupCtx.closePath(); markupCtx.fill();
+                        markupCtx.beginPath(); 
+                        markupCtx.moveTo(w/2, 0);
+                        markupCtx.lineTo(w/2 - head, -head / 1.7); 
+                        markupCtx.lineTo(w/2 - head, head / 1.7);
+                        markupCtx.closePath(); 
+                        markupCtx.fill();
                     }
                 } else if (a.type === 'rect') {
                     markupCtx.beginPath(); markupCtx.rect(-w/2, -h/2, w, h); 
@@ -411,8 +476,16 @@
                     if (a.fillOpacity > 0) markupCtx.fill();
                     if (a.strokeOpacity > 0 || a.thickness > 0) markupCtx.stroke();
                 } else if (a.type === 'text') {
-                    markupCtx.fillStyle = markupCtx.strokeStyle;
-                    markupCtx.fillText(a.text, -w/2, h/4);
+                    const fontSize = a.fontSize || Math.max(16, canvas.width / 45); 
+                    const fontFamily = a.fontFamily || 'sans-serif';
+                    markupCtx.font = `bold ${fontSize}px ${fontFamily}`;
+                    
+                    const tColor = a.textColor || a.strokeColor || '#ef4444';
+                    const tOp = a.textOpacity !== undefined ? a.textOpacity : (a.strokeOpacity !== undefined ? a.strokeOpacity : 100);
+                    markupCtx.fillStyle = hexToRgba(tColor, tOp);
+                    
+                    markupCtx.textBaseline = 'middle';
+                    markupCtx.fillText(a.text, -w/2, 0);
                 }
                 
                 if (a === selectedAnno) {
@@ -439,24 +512,35 @@
                 markupCtx.lineWidth = currentAnno.thickness;
                 markupCtx.beginPath();
                 if (currentAnno.type === 'line' || currentAnno.type === 'arrow') {
-                    markupCtx.moveTo(currentAnno.x1, currentAnno.y1); markupCtx.lineTo(currentAnno.x2, currentAnno.y2); markupCtx.stroke();
+                    // FIXED: Pull back shaft during live drawing
+                    const head = currentAnno.type === 'arrow' ? markupCtx.lineWidth * 4 : 0;
+                    const angle = Math.atan2(currentAnno.y2 - currentAnno.y1, currentAnno.x2 - currentAnno.x1); 
+                    const pullBack = currentAnno.type === 'arrow' ? head / 2 : 0;
+                    const shaftEndX = currentAnno.x2 - pullBack * Math.cos(angle);
+                    const shaftEndY = currentAnno.y2 - pullBack * Math.sin(angle);
+                    
+                    markupCtx.moveTo(currentAnno.x1, currentAnno.y1); 
+                    markupCtx.lineTo(shaftEndX, shaftEndY); 
+                    markupCtx.stroke();
+                    
                     if (currentAnno.type === 'arrow') {
                         markupCtx.fillStyle = markupCtx.strokeStyle;
-                        const angle = Math.atan2(currentAnno.y2 - currentAnno.y1, currentAnno.x2 - currentAnno.x1); const head = markupCtx.lineWidth * 4;
-                        markupCtx.beginPath(); markupCtx.moveTo(currentAnno.x2, currentAnno.y2);
+                        markupCtx.beginPath(); 
+                        markupCtx.moveTo(currentAnno.x2, currentAnno.y2);
                         markupCtx.lineTo(currentAnno.x2 - head * Math.cos(angle - Math.PI/6), currentAnno.y2 - head * Math.sin(angle - Math.PI/6));
                         markupCtx.lineTo(currentAnno.x2 - head * Math.cos(angle + Math.PI/6), currentAnno.y2 - head * Math.sin(angle + Math.PI/6));
-                        markupCtx.closePath(); markupCtx.fill();
+                        markupCtx.closePath(); 
+                        markupCtx.fill();
                     }
                 } else if (currentAnno.type === 'rect') {
                     markupCtx.rect(currentAnno.x1, currentAnno.y1, currentAnno.x2 - currentAnno.x1, currentAnno.y2 - currentAnno.y1); 
                     if (currentAnno.fillOpacity > 0) markupCtx.fill();
-                    if (currentAnno.strokeOpacity > 0) markupCtx.stroke();
+                    if (currentAnno.strokeOpacity > 0 || currentAnno.thickness > 0) markupCtx.stroke();
                 } else if (currentAnno.type === 'circle') {
                     const r = Math.sqrt(Math.pow(currentAnno.x2 - currentAnno.x1, 2) + Math.pow(currentAnno.y2 - currentAnno.y1, 2));
                     markupCtx.arc(currentAnno.x1, currentAnno.y1, r, 0, 2 * Math.PI); 
                     if (currentAnno.fillOpacity > 0) markupCtx.fill();
-                    if (currentAnno.strokeOpacity > 0) markupCtx.stroke();
+                    if (currentAnno.strokeOpacity > 0 || currentAnno.thickness > 0) markupCtx.stroke();
                 }
                 markupCtx.restore();
             }
@@ -468,6 +552,16 @@
                 selectedAnno.strokeColor = activeStrokeColor; selectedAnno.strokeOpacity = activeStrokeOp;
                 selectedAnno.thickness = activeThickness;
                 selectedAnno.fillColor = activeFillColor; selectedAnno.fillOpacity = activeFillOp;
+                selectedAnno.fontFamily = activeFontFamily;
+                selectedAnno.fontSize = activeFontSize;
+                selectedAnno.textColor = activeTextColor; selectedAnno.textOpacity = activeTextOp;
+                
+                if (selectedAnno.type === 'text') {
+                    markupCtx.font = `bold ${activeFontSize}px ${activeFontFamily}`;
+                    const m = markupCtx.measureText(selectedAnno.text);
+                    selectedAnno.width = m.width;
+                    selectedAnno.height = activeFontSize;
+                }
                 renderVectors();
             }
         }
@@ -481,10 +575,21 @@
         fillHex.addEventListener('input', (e) => { activeFillColor = e.target.value; fillPicker.value = activeFillColor; syncStylesToSelected(); });
         fillOp.addEventListener('input', (e) => { activeFillOp = parseInt(e.target.value); fillOpVal.innerText = activeFillOp + '%'; syncStylesToSelected(); });
 
+        fontFamEl.addEventListener('input', (e) => { activeFontFamily = e.target.value; syncStylesToSelected(); });
+        fontSizeEl.addEventListener('input', (e) => { if(e.target.value) { activeFontSize = parseInt(e.target.value); syncStylesToSelected(); } });
+        textPicker.addEventListener('input', (e) => { activeTextColor = e.target.value; textHex.value = activeTextColor; syncStylesToSelected(); });
+        textHex.addEventListener('input', (e) => { activeTextColor = e.target.value; textPicker.value = activeTextColor; syncStylesToSelected(); });
+        textOp.addEventListener('input', (e) => { activeTextOp = parseInt(e.target.value); textOpVal.innerText = activeTextOp + '%'; syncStylesToSelected(); });
+
         const handleGlobalKeypress = (e) => {
             if (e.key === 'Delete' || e.key === 'Backspace') {
                 e.preventDefault(); e.stopPropagation(); 
-                if (selectedAnno) { annotations = annotations.filter(item => item !== selectedAnno); selectedAnno = null; renderVectors(); }
+                if (selectedAnno) { 
+                    annotations = annotations.filter(item => item !== selectedAnno); 
+                    selectedAnno = null; 
+                    updateToolbarVisibility();
+                    renderVectors(); 
+                }
             }
         };
         window.addEventListener('keydown', handleGlobalKeypress, true);
@@ -495,7 +600,9 @@
                 document.querySelectorAll('.suite-tool-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active'); currentMode = btn.getAttribute('data-mode');
                 if (currentMode !== 'select') selectedAnno = null;
-                cropBox.style.display = (currentMode === 'crop') ? 'block' : 'none'; renderVectors();
+                cropBox.style.display = (currentMode === 'crop') ? 'block' : 'none'; 
+                updateToolbarVisibility();
+                renderVectors();
             });
         });
 
@@ -546,16 +653,24 @@
                     activeThickness = selectedAnno.thickness || 6;
                     activeFillColor = selectedAnno.fillColor || "#0066cc";
                     activeFillOp = selectedAnno.fillOpacity !== undefined ? selectedAnno.fillOpacity : 0;
+                    activeFontFamily = selectedAnno.fontFamily || "sans-serif";
+                    activeFontSize = selectedAnno.fontSize || 32;
+                    activeTextColor = selectedAnno.textColor || selectedAnno.strokeColor || "#ef4444";
+                    activeTextOp = selectedAnno.textOpacity !== undefined ? selectedAnno.textOpacity : (selectedAnno.strokeOpacity !== undefined ? selectedAnno.strokeOpacity : 100);
                     
                     strokePicker.value = activeStrokeColor; strokeHex.value = activeStrokeColor;
                     strokeOp.value = activeStrokeOp; strokeOpVal.innerText = activeStrokeOp + "%";
                     strokeWidthEl.value = activeThickness;
                     fillPicker.value = activeFillColor; fillHex.value = activeFillColor;
                     fillOp.value = activeFillOp; fillOpVal.innerText = activeFillOp + "%";
+                    fontFamEl.value = activeFontFamily; fontSizeEl.value = activeFontSize;
+                    textPicker.value = activeTextColor; textHex.value = activeTextColor;
+                    textOp.value = activeTextOp; textOpVal.innerText = activeTextOp + "%";
 
                     isTransforming = true; activeTransformHandle = 'move';
                     startMouseX = nx; startMouseY = ny; startLeft = selectedAnno.cx; startTop = selectedAnno.cy;
                 }
+                updateToolbarVisibility();
                 renderVectors(); return;
             } else if (currentMode === 'crop') {
                 if (e.target.id === 'handle-resize') {
@@ -569,12 +684,14 @@
                 if (currentMode === 'text') {
                     const txt = prompt("Enter text markup:");
                     if (txt) {
-                        markupCtx.font = `bold ${Math.max(16, canvas.width / 45)}px sans-serif`;
+                        markupCtx.font = `bold ${activeFontSize}px ${activeFontFamily}`;
                         const m = markupCtx.measureText(txt);
                         annotations.push({ 
-                            type: 'text', cx: nx, cy: ny, width: m.width, height: 26, text: txt, 
+                            type: 'text', cx: nx, cy: ny, width: m.width, height: activeFontSize, text: txt, 
                             strokeColor: activeStrokeColor, strokeOpacity: activeStrokeOp, thickness: activeThickness, 
-                            fillColor: activeFillColor, fillOpacity: activeFillOp, rotation: 0 
+                            fillColor: activeFillColor, fillOpacity: activeFillOp,
+                            fontFamily: activeFontFamily, fontSize: activeFontSize, textColor: activeTextColor, textOpacity: activeTextOp,
+                            rotation: 0 
                         });
                         renderVectors();
                     }
