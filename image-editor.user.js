@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Tulip App Editor - Advanced Image Editor Suite (v12.1)
 // @namespace    http://tampermonkey.net/
-// @version      12.1
+// @version      12.2
 // @description  Fixed arrow shaft geometry (pulls shaft back to center of arrow point to prevent clipping), Contextual Toolbar, and robust Cloud loading.
 // @author       Blake Bourque
 // @match        https://*.tulip.co/apps/*
+// @match        https://*.tulip.co/w/*/apps/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @connect      amazonaws.com
