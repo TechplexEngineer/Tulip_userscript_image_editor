@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Tulip App Editor - Advanced Image Editor Suite (v9.6)
+// @name         Tulip App Editor - Advanced Image Editor Suite (v10.1)
 // @namespace    http://tampermonkey.net/
-// @version      9.6
-// @description  Restores precise crop window handles, multi-cloud URL parsing, and non-destructive affine vector saves.
+// @version      10.1
+// @description  Added legacy color migration to support older saves, separate line/fill opacity, and non-destructive JSON saves.
 // @author       Blake Bourque
 // @match        https://*.tulip.co/apps/*
 // @grant        GM_addStyle
@@ -69,17 +69,13 @@
         #tulip-source-canvas { display: block; max-width: 100%; max-height: 60vh; }
         #tulip-markup-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
         
-        /* RESTORED CROP BOX STYLING */
         #tulip-suite-cropbox {
-            position: absolute; border: 2px dashed #0ea5e9;
-            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
-            cursor: move; box-sizing: border-box; display: none; z-index: 100;
+            position: absolute; border: 2px dashed #0066cc;
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+            cursor: move; box-sizing: border-box; display: none;
         }
-        .crop-corner-handle { 
-            position: absolute; width: 16px; height: 16px; 
-            background: #0ea5e9; border: 2px solid white; border-radius: 50%; z-index: 101; 
-        }
-        .handle-se { bottom: -8px; right: -8px; cursor: se-resize; }
+        .crop-corner-handle { position: absolute; width: 20px; height: 20px; background: #0066cc; border: 2px solid white; border-radius: 50%; }
+        .handle-se { bottom: -11px; right: -11px; cursor: se-resize; }
 
         .tulip-suite-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; }
         .suite-hint-badge { font-size: 13px; color: #64748b; font-weight: 500; background: #f1f5f9; padding: 8px 14px; border-radius: 4px; }
@@ -89,7 +85,6 @@
         .suite-btn-confirm { background: #0066cc; color: white; }
     `);
 
-    // --- PNG METADATA ENGINE ---
     function injectPNGMetadata(blob, key, value) {
         return new Promise((resolve) => {
             const reader = new FileReader();
@@ -138,7 +133,6 @@
         });
     }
 
-    // TREEWALKER OBSERVER
     const observer = new MutationObserver(() => {
         const textNodes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         let resetRatioNode = null;
@@ -205,7 +199,7 @@
                 openImageSuiteWindow(extractedUrl, btn, fileInput);
             } else {
                 btn.disabled = false; btn.innerText = 'Edit & Crop Selected Image';
-                alert("Please select the image widget again. (ID missing)");
+                alert("Please select the image widget again.");
             }
         });
     }
@@ -334,9 +328,21 @@
         const imageAspectRatio = sourceImg.naturalWidth / sourceImg.naturalHeight;
         let boxGeom = { left: 0, top: 0, width: canvas.width, height: canvas.height };
         let currentMode = 'select'; 
-        let annotations = (parsedState && parsedState.vectors) ? parsedState.vectors : [];
-        let selectedAnno = null, currentAnno = null;
         
+        // LEGACY MIGRATION: Convert old .color attributes to new .strokeColor standard
+        let annotations = [];
+        if (parsedState && parsedState.vectors) {
+            annotations = parsedState.vectors.map(v => {
+                if (v.color && !v.strokeColor) {
+                    v.strokeColor = v.color;
+                    v.strokeOpacity = 100;
+                    v.fillOpacity = 0;
+                }
+                return v;
+            });
+        }
+        
+        let selectedAnno = null, currentAnno = null;
         let activeStrokeColor = "#ef4444", activeStrokeOp = 100, activeThickness = 6;
         let activeFillColor = "#0066cc", activeFillOp = 0; 
         
@@ -361,7 +367,6 @@
 
         setTimeout(() => {
             if (!parsedState || !parsedState.cropSettings) {
-                // Wait for layout calculation then init bounds strictly to native visual boundaries
                 boxGeom.left = 0; boxGeom.top = 0;
                 boxGeom.width = wrapper.clientWidth; boxGeom.height = wrapper.clientHeight;
                 if (canvas.height > wrapper.clientHeight || canvas.width > wrapper.clientWidth) {
