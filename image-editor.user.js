@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Tulip App Editor - Advanced Image Editor Suite (v13.0)
+// @name         Tulip App Editor - Advanced Image Editor Suite (v15.0)
 // @namespace    http://tampermonkey.net/
-// @version      13.0
-// @description  Added robust State History Engine (Undo/Redo), keyboard shortcuts, input safeties, and contextual styling tools.
+// @version      15.0
+// @description  Pre-flight 1080p normalization engine to guarantee file limit compliance, plus Undo/Redo and Contextual toolbars.
 // @author       Blake Bourque
 // @match        https://*.tulip.co/apps/*
 // @grant        GM_addStyle
@@ -210,9 +210,51 @@
                         const reader = new FileReader();
                         reader.onloadend = function() {
                             const currentDataUrl = reader.result;
-                            const pristineSourceDataUrl = (parsedState && parsedState.originalImgData) ? parsedState.originalImgData : currentDataUrl;
+                            let pristineSourceDataUrl = (parsedState && parsedState.originalImgData) ? parsedState.originalImgData : currentDataUrl;
+                            
                             const img = new Image();
-                            img.onload = function() { initializeSuiteInterface(img, parsedState, pristineSourceDataUrl, targetFileInput); };
+                            img.onload = function() {
+                                // PRE-FLIGHT NORMALIZATION: Downscale 4K+ images to 1920x1080 bounds 
+                                const MAX_W = 1920;
+                                const MAX_H = 1080;
+                                
+                                if (img.naturalWidth > MAX_W || img.naturalHeight > MAX_H) {
+                                    const scale = Math.min(MAX_W / img.naturalWidth, MAX_H / img.naturalHeight);
+                                    
+                                    const tempCanvas = document.createElement('canvas');
+                                    tempCanvas.width = img.naturalWidth * scale;
+                                    tempCanvas.height = img.naturalHeight * scale;
+                                    const tempCtx = tempCanvas.getContext('2d');
+                                    tempCtx.drawImage(img, 0, 0, tempCanvas.width, tempCanvas.height);
+                                    
+                                    // Proportionally scale down all historical vector paths to match new dimensions
+                                    if (parsedState) {
+                                        if (parsedState.vectors) {
+                                            parsedState.vectors.forEach(v => {
+                                                if(v.cx !== undefined) v.cx *= scale;
+                                                if(v.cy !== undefined) v.cy *= scale;
+                                                if(v.width !== undefined) v.width *= scale;
+                                                if(v.height !== undefined) v.height *= scale;
+                                                if(v.thickness !== undefined) v.thickness = Math.max(1, Math.round(v.thickness * scale));
+                                                if(v.fontSize !== undefined) v.fontSize = Math.max(8, Math.round(v.fontSize * scale));
+                                                if(v.x1 !== undefined) { v.x1 *= scale; v.y1 *= scale; v.x2 *= scale; v.y2 *= scale; }
+                                            });
+                                        }
+                                        if (parsedState.cropSettings) {
+                                            parsedState.cropSettings.left *= scale; parsedState.cropSettings.top *= scale;
+                                            parsedState.cropSettings.width *= scale; parsedState.cropSettings.height *= scale;
+                                        }
+                                    }
+                                    
+                                    pristineSourceDataUrl = tempCanvas.toDataURL('image/jpeg', 0.85);
+                                    
+                                    const scaledImg = new Image();
+                                    scaledImg.onload = function() { initializeSuiteInterface(scaledImg, parsedState, pristineSourceDataUrl, targetFileInput); };
+                                    scaledImg.src = pristineSourceDataUrl;
+                                } else {
+                                    initializeSuiteInterface(img, parsedState, pristineSourceDataUrl, targetFileInput);
+                                }
+                            };
                             img.src = pristineSourceDataUrl;
                         };
                         reader.readAsDataURL(blobData);
@@ -387,7 +429,6 @@
         let startMouseX, startMouseY, startLeft, startTop, startWidth, startHeight, startX, startY;
         let isDragging = false, isResizing = false, isDrawing = false;
 
-        // --- HISTORY ENGINE (UNDO/REDO) ---
         let history = [];
         let historyStep = -1;
 
@@ -418,7 +459,7 @@
         function restoreState(state) {
             annotations = JSON.parse(JSON.stringify(state.annotations));
             boxGeom = JSON.parse(JSON.stringify(state.boxGeom));
-            selectedAnno = null; // Clear selection safety
+            selectedAnno = null; 
             updateCropUI();
             updateToolbarVisibility();
             renderVectors();
@@ -432,7 +473,6 @@
 
         undoBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); undo(); });
         redoBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); redo(); });
-        // ----------------------------------
 
         function updateToolbarVisibility() {
             let activeType = currentMode;
@@ -475,7 +515,7 @@
             }
             updateCropUI();
             updateToolbarVisibility();
-            saveState(); // Commit Base State Layout Start
+            saveState(); 
         }, 50);
 
         function renderVectors() {
@@ -859,6 +899,10 @@
         document.getElementById('suite-confirm').addEventListener('click', (e) => {
             e.preventDefault(); e.stopPropagation();
             selectedAnno = null; renderVectors();
+
+            // EXTREME COMPRESSION: Drop original canvas down to 50% lossy JPEG quality for the hidden metadata payload
+            const optimizedPristineDataUrl = canvas.toDataURL('image/jpeg', 0.5);
+
             const masterBlendedCanvas = document.createElement('canvas');
             masterBlendedCanvas.width = canvas.width; masterBlendedCanvas.height = canvas.height;
             const masterCtx = masterBlendedCanvas.getContext('2d');
@@ -875,7 +919,7 @@
             }
 
             finalUploadCanvas.toBlob((flatBlob) => {
-                const metadata = { vectors: annotations, originalImgData: pristineSourceDataUrl, cropSettings: (currentMode === 'crop' ? boxGeom : null) };
+                const metadata = { vectors: annotations, originalImgData: optimizedPristineDataUrl, cropSettings: (currentMode === 'crop' ? boxGeom : null) };
                 injectPNGMetadata(flatBlob, "TulipVectorSuiteState", JSON.stringify(metadata)).then((metaBlob) => {
                     const file = new File([metaBlob], "annotated_asset.png", { type: "image/png" });
                     const dataTransfer = new DataTransfer(); dataTransfer.items.add(file);
