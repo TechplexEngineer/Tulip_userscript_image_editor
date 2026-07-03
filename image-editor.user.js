@@ -5,6 +5,7 @@
 // @description  Pre-flight 1080p normalization engine to guarantee file limit compliance, plus Undo/Redo and Contextual toolbars.
 // @author       Blake Bourque
 // @match        https://*.tulip.co/apps/*
+// @match        https://*.tulip.co/w/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
 // @connect      amazonaws.com
